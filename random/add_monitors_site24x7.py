@@ -78,7 +78,7 @@ if api_authtoken is None:
 
 HEADERS = {'Accept': 'application/json; version=2.1', 'Authorization': 'Zoho-oauthtoken' + ' ' + api_authtoken}
 
-monitor_names = ["agircarrco.corcentricplatform.com/web/login?SAML=0"]
+monitor_names = [""]
 
 for monitor in monitor_names:
 
