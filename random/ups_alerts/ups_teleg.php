@@ -1,12 +1,10 @@
 #!/usr/bin/php
 <?php
 
-//web soft 10.0.0.36 administrator:administrator
 //php7.2-mbstring require
 //*/1   *   *   *   *   /usr/bin/php /home/last/Scripts/ups_teleg.php
 
 $chat_id = "";
-
 $access_token = '';
 $api = 'https://api.telegram.org/bot' . $access_token;
 
@@ -30,7 +28,6 @@ $inbox = imap_open($hostname,$username,$password) or die(sendMessage($chat_id,'C
 /* grab emails */
 $emails = imap_search($inbox,'UNSEEN', SE_UID);
 
-
 /* if emails are returned, cycle through each... */
 if($emails) {
 	
@@ -46,8 +43,7 @@ if($emails) {
 		/* get information specific to this email */
 		//$overview = imap_fetch_overview($inbox,$email_number,0);
 		$message = imap_fetchbody($inbox,$email_number, 1, SE_UID);
-	      
-        $message = imap_qprint($message);
+	    $message = imap_qprint($message);
       
         $find_chr = mb_detect_encoding($message, "auto");
         
@@ -56,8 +52,7 @@ if($emails) {
          }
 
         $message = transliterate($message);        
-         
-		$status = imap_setflag_full($inbox, $email_number, '\\Seen');
+        $status = imap_setflag_full($inbox, $email_number, '\\Seen');
         
     $mess = $message;
     sendMessage($chat_id,$mess);
