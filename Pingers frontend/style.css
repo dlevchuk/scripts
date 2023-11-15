@@ -1,0 +1,64 @@
+body {
+	font-family: sans-serif;
+	font-size: 12px;
+	color: #000000;
+	background-color: #F5F5F5
+}
+
+.head {
+	background-color: #D0DCE0;
+	font-weight: bold
+}
+
+.cell {
+	background-color: #E4E4E4;
+}
+
+.cursor {
+	cursor: pointer;
+}
+
+th {
+	font-family: sans-serif;
+	font-size: 14px;
+	font-weight: bold;
+	color: #000000;
+	background-color: #D3DCE3
+}
+
+td {
+	font-family: sans-serif;
+	font-size: 14px
+}
+
+.st_green {
+	color: green
+}
+
+.st_red {
+	color: red
+}
+
+.active {
+	color: green;
+}
+
+.noactive {
+	color: red;
+}
+
+#add_dev {
+	display: none;
+	width: 400px;
+	margin: -200px auto auto -200px;
+	height: 400px;
+	position: absolute;
+	background: #E8E8E8;
+	top: 50%;
+	left: 50%;
+	z-index: 10
+}
+
+#add_dev.visible {
+	display: block
+}
