@@ -1,0 +1,358 @@
+There is asterisk, a group of operators (3-5 people) with a heavy load (average waiting time > 2 minutes)
+
+The task - for subscribers with a certain geography to give the opportunity not to wait until the operator is free, and pressing 0 to hear "Thank you for the call. We will definitely call you back", disconnect and calmly wait for a call from the operator, or in common parlance Callback.
+
+Create tables
+
+    CREATE TABLE asterisk.callback1 (
+        id int(11) NOT NULL AUTO_INCREMENT,
+        dt timestamp DEFAULT CURRENT_TIMESTAMP,
+        cid varchar(32) DEFAULT NULL,
+        dst varchar(32) DEFAULT NULL,
+        status smallint(6) NOT NULL DEFAULT 0,
+        tot_calls int(11) NOT NULL DEFAULT 0,
+        last_call timestamp DEFAULT '0000-00-00 00:00:00',
+        compl_dt timestamp DEFAULT '0000-00-00 00:00:00',
+        uniqueid varchar(32) DEFAULT NULL,
+        queue varchar(255) DEFAULT NULL,
+    PRIMARY KEY (ID))
+    ENGINE = INNODB
+
+    CREATE TABLE asterisk.callback_log (
+        id int(11) NOT NULL AUTO_INCREMENT,
+        callback_id int(11) NOT NULL,
+        dt timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        status varchar(32) DEFAULT NULL,
+        params varchar(2048) DEFAULT NULL,
+        PRIMARY KEY (id),
+        CONSTRAINT callback_log_fk1 FOREIGN KEY (callback_id)
+        REFERENCES asterisk.callback1 (id) ON DELETE CASCADE ON UPDATE CASCADE)
+    ENGINE = INNODB
+
+
+
+
+queues.conf
+
+[operators]
+    ringinuse = no
+    strategy = rrmemory
+    music = default
+    member => SIP/321
+    member => SIP/322
+    member => SIP/323
+    member => SIP/324
+    member => SIP/325
+    member => Agent/1
+    member => Agent/2
+    member => Agent/3
+    member => Agent/4
+    member => Agent/5
+    context = main_menu_press
+    timeout = 0
+    announce-position = yes
+    announce-frequency = 60
+    periodic-announce-frequency = 30
+    queue-youarenext = queue-youarenext
+    membermacro=queue-answ
+
+config.php
+<?php
+
+ob_implicit_flush(true);
+set_time_limit(6);
+
+date_default_timezone_set('Europe/Kyiv');
+
+mysql_connect("localhost","asterisk","***") or die('Mysql connect error');
+mysql_select_db("asterisk");
+
+
+function genCallbackFile($id,$cid,$queue) {
+
+ $fname='/var/spool/asterisk/outgoing/callback-'.$id;
+ if (file_exists($fname)) return;
+
+ $callfile="Channel: Local/".$cid."@do-callback\n".
+            "WaitTime: 60\n".
+            "MaxRetries: 1\n"."RetryTime: 120\n".
+            "Context: callback-complete\n".
+            "Extension: s\n".
+            "Set: __CALLBACK_ID=$id\n".
+            "Set: __CALLBACK_QUEUE=$queue\n".
+            "Set: __CALLBACK_NUM=$cid\n";
+
+ $fp=fopen($fname,'w+');fputs($fp,$callfile);fclose($fp);
+
+}
+
+?>
+
+
+
+
+callback.php
+#!/usr/bin/php
+<?
+
+ $arg=$_SERVER["argv"];
+ $a=$arg[1];
+ $id=abs($arg[2]);
+
+ include('/var/lib/asterisk/agi-bin/config.php');
+
+ $in = fopen("php://stdin","r");
+ $stdlog = fopen("/var/log/asterisk/callback.log", "a+");
+
+ // toggle debugging output (more verbose)
+ $debug = false;
+
+ // parse agi headers into array
+ while ($env=read()) {
+   $s = split(": ",$env);
+   $agi[str_replace("agi_","",$s[0])] = trim($s[1]);
+   if (($env == "") || ($env == "\n")) {
+     break;
+   }
+ }
+
+ $dt=date('d.m.Y H:i:s');
+
+ $cid=$agi[callerid];
+
+ switch ($a) {
+    case 'cid-answ' : { 
+        $stmt='select * from callback where id='.$id;
+        $result=mysql_query($stmt);
+        $row=mysql_fetch_object($result);
+        $cid=$row->cid;
+
+        $stmt="select * from callback where id=$id or (dt>(now()-interval 24 hour) and cid='$cid' and STATUS<>2)";
+        $result=mysql_query($stmt);
+        while ($row=mysql_fetch_object($result)) {
+            $id=$row->id;
+            $stmt="update callback set status=2,compl_dt=now() where id=$id";
+            $result=mysql_query($stmt);
+            rename('/var/spool/asterisk/outgoing/callback-'.$id,'/tmp/callback-'.$id);
+        }
+        break;
+    }
+
+    case 'queue-answ' : { 
+        $dst=$arg[3];
+        $stmt=sprintf('update callback set status=1,last_call=now(),tot_calls=tot_calls+1,dst="%s",uniqueid="%s" where id=%d",$dst,$agi[uniqueid],$id);
+        $result=mysql_query($stmt);
+        break;
+    }
+    case 'complete' : { 
+        $id=abs($arg[2]);
+        $stmt='select * from callback where id='.$id;
+        $result=mysql_query($stmt);
+        $row=mysql_fetch_object($result);
+
+        if ($row->status!=2) genCallBackFile($id,$row->cid,$row->queue);
+
+        break;
+    }
+    case 'gen': { 
+        $qname=trim($arg[3]);
+        if (!$qname) $qname='operators';
+
+        $stmt=sprintf('select * from callback where cid="%s" and queue="%s" status<>2 and dt>now()-interval 24 hour',$cid,$qname);
+        $result=mysql_query($stmt);
+        if (!$row=mysql_fetch_object($result)) {
+            $stmt="insert into callback (cid,queue) values ('$cid','$qname')";
+            $result=mysql_query($stmt);
+            $id=mysql_insert_id();
+            fputs($stdlog,"$dt|$stmt\n");
+        } else {
+            $log_status='cid '.$cid.' already in spool '.$qname;
+        }
+
+        genCallBackFile($id,$cid,$qname);
+        break;
+    }
+ }
+
+ $stmt=sprintf('insert into callback_log (callback_id,status) values (%d,"%s -> %s")',$id,$a,$log_status);
+ $result=mysql_query($stmt);
+ $log_id=mysql_insert_id();
+
+ // clean up file handlers etc.
+ fclose($in);
+ fclose($stdlog);
+
+ exit;
+
+
+?>
+
+
+
+And one more file callback-regen.php to regenerate call files put in cron every 5 minutes from 8 am to 8 pm
+With each attempt the time of re-callback increases by 5 minutes. After 10 attempts we stop mocking the operato
+
+#!/usr/bin/php
+<?
+
+ include('/var/lib/asterisk/agi-bin/config.php');
+
+ $stmt='select * from callback where status<>2  and dt>now()-interval 24 hour and tot_calls<=10 '.
+        ' and last_call<now()-interval tot_calls*5 minute '.
+        ' group by cid,queue';
+ $result=mysql_query($stmt);
+ while ($row=mysql_fetch_object($result)) {
+    genCallBackFile($row->id,$row->cid,$row->queue);
+ }
+
+?>
+
+
+
+
+Edit extensions.conf
+
+exten => tel_number,s,1
+    same => n, GotoIf($["${CALLERID(num):0:4}"="0482"]?extra) ;
+    same => n, Goto(call)
+    same => n(extra), NoOp( Allow callback for ${CALLERID(num)} )
+    same => n, Set(ALLOW_CALLBACK=1)
+    same => n, Set(CALLBACK_QUEUE=operators)
+    same => n, Background(vse/press0-to-callback)
+
+    same => n(call), NoOp(Ask for operators. GROUP_COUNT=${GROUP_COUNT(operators)})
+    same => n, queue(operators,tThH)
+    same => n, Hangup
+
+include => main_menu_press
+
+
+
+
+[main_menu_press]
+exten => 0,1, NoOp('-------------------- ${CALLERID(num)} PRESS BUTTON ${EXTEN}. ALLOW_CALLBACK=${ALLOW_CALLBACK}')
+    same => n, GotoIf($[${ALLOW_CALLBACK}=1]?callback,s,1:i,1)
+
+
+
+
+[callback]
+exten => s,1, NoOp( CALLBACK )
+    same => n, Playback(thank-you-for-calling&vse/my-vam-perezvonim)
+    same => n, Hangup
+
+exten => h,1, agi(custom/callback.php,gen,0,${CALLBACK_QUEUE})
+
+
+
+
+[do-callback]
+exten => _X.,1, NoOp( Try to dial to queue (${CALLBACK_QUEUE}) and callback to ${CALLBACK_NUM} )
+    same => n, Set(__DST="?")
+    same => n, Set(CALLERID(num)=${CALLBACK_NUM})
+    same => n(call), queue(${CALLBACK_QUEUE},tT)
+    same => n, NoOp( CALLBACK QUEUESTATUS=${QUEUESTATUS} )
+
+
+
+[macro-queue-answ] ;
+exten => s,1, NoOp( Queue member answered uniq=${UNIQUEID} cid=${CALLERID(num)} chan=${CHANNEL} callback_id=${CALLBACK_ID} callback_num=${CALLBACK_NUM} )
+    same => n, GotoIf($[ "${CALLBACK_ID}x" = "x" ]?skip)
+    same => n, Set(DST=${CHANNEL})
+    same => n, Set(CALLERID(num)=067)
+    same => n, Playback(priv-trying) ; 
+    same => n, agi(callback.php,queue-answ,${CALLBACK_ID},${CHANNEL},${UNIQUEID})
+    same => n, Dial(Local/${CALLBACK_NUM}@from_office_new)
+    same => n, NoOp( [macro-queue-answ] dial timeout )
+    same => n(skip), NoOp( )
+
+exten => h,1, NoOp( [macro-queue-answ] dial hangup )
+    same => n, GotoIf($[ "${CALLBACK_ID}x" = "x" ]?end)
+    same => n, NoOp( dialstatus=${DIALSTATUS} hangupcause=${HANGUPCAUSE} queuestatus=${QUEUESTATUS})
+    same => n, NoOp( my_dialstatus=${MY_DIALSTATUS} my_hangupcause=${MY_HANGUPCAUSE})
+    same => n, agi(callback.php,hangup-queue-answ,${CALLBACK_ID},${CHANNEL},${UNIQUEID})
+    same => n(end), NoOp
+
+[callback-complete]
+exten => s,1, NoOp( Callback complete. CALLBACK_ID=${CALLBACK_ID}, uniq=${UNIQUEID}, dst=${DST} chan=${CHANNEL} )
+    same => n, NoOp( dialstatus=${DIALSTATUS} hangupcause=${HANGUPCAUSE} queuestatus=${QUEUESTATUS})
+    same => n, NoOp( my_dialstatus=${MY_DIALSTATUS} my_hangupcause=${MY_HANGUPCAUSE})
+
+
+
+
+
+
+exten => n, Set(ALLOW_CALLBACK=1)
+exten => n, Set(CALLBACK_QUEUE=701)
+exten => n, Background(vse/press5-to-callback) 
+include => main_menu_press
+
+
+[main_menu_press]
+exten => 5,1, NoOp('-------------------- ${CALLERID(num)} PRESS BUTTON ${EXTEN}. ALLOW_CALLBACK=${ALLOW_CALLBACK}')
+exten => n, GotoIf($[${ALLOW_CALLBACK}=1]?callback,s,1:i,1) 
+
+
+[callback]
+exten => s, 1, NoOp( CALLBACK )
+exten => s, n, Playback(thank-you-for-calling&vse/my-vam-perezvonim)
+exten => s, n, Hangup
+
+exten => h,1, agi(custom/callback.php,gen,0,${CALLBACK_QUEUE})
+
+
+
+[macro-queue-answ] ;
+exten => s,1, NoOp( Queue member answered uniq=${UNIQUEID} cid=${CALLERID(num)} chan=${CHANNEL} callback_id=${CALLBACK_ID} callback_num=${CALLBACK_NUMBER} )
+
+exten => s, n, GotoIf($[ "${CALLBACK_ID}x" = "x" ]?skip)
+exten => s, n, Set(DST=${CHANNEL})
+exten => s, n, Set(CALLERID(num)=067)
+exten => s, n, Playback(priv-trying) ; 
+exten => s, n, agi(custom/callback.php,queue-answ,${CALLBACK_ID},${CHANNEL},${UNIQUEID})
+exten => s, n, Dial(Local/${CALLBACK_NUM}@from-internal)
+exten => s, n, NoOp( [macro-queue-answ] dial timeout )
+exten => s, n(skip), NoOp( )
+
+exten => h,1, NoOp( [macro-queue-answ] dial hangup )
+exten => s, n, GotoIf($[ "${CALLBACK_ID}x" = "x" ]?end)
+exten => s, n, NoOp( dialstatus=${DIALSTATUS} hangupcause=${HANGUPCAUSE} queuestatus=${QUEUESTATUS})
+exten => s, n, NoOp( my_dialstatus=${MY_DIALSTATUS} my_hangupcause=${MY_HANGUPCAUSE})
+exten => s, n, agi(custom/callback.php,hangup-queue-answ,${CALLBACK_ID},${CHANNEL},${UNIQUEID})
+exten => s, n(end), NoOp
+
+
+
+[callback-complete]
+exten => s, 1, NoOp( Callback complete. CALLBACK_ID=${CALLBACK_ID}, uniq=${UNIQUEID}, dst=${DST} chan=${CHANNEL} )
+exten => s, n, NoOp( dialstatus=${DIALSTATUS} hangupcause=${HANGUPCAUSE} queuestatus=${QUEUESTATUS})
+exten => s, n, NoOp( my_dialstatus=${MY_DIALSTATUS} my_hangupcause=${MY_HANGUPCAUSE})
+
+
+
+
+[callback-to-to]
+exten => n, Background(vse/press5-to-callback) 
+include => main_menu_press
+
+
+[main_menu_press]
+exten => 5,1, NoOp(PRESS BUTTON ${EXTEN})
+exten => n, Goto(callback-do) 
+
+
+
+[callback-do]
+exten => s,1, NoOp( CALLBACK )
+exten => n, Playback(thank-you-for-calling&vse/my-vam-perezvonim)
+exten => n, Hangup
+
+exten => h,1, agi(/var/lib/asterisk/agi-bin/custom/callback_v2.sh ${CALLERID(num)})
+
+
+[callback]
+exten => s,1,Answer()
+same => n,Wait(4)
+same => n,Dial(Local/${BNUM}@from-internal,220,r)
+same => n,Hangup
