@@ -1,0 +1,31 @@
+---
+
+- name: Install zabbix agent on test raspberry
+  hosts: zabbix_hosts
+  gather_facts: yes
+  tasks:
+
+    - name: Create a new host or update an existing host's info
+      local_action:
+        module: zabbix_host
+        server_url: "{{ zabbix_server_url }}"
+        login_user: "{{ zab_user }}"
+        login_password: "{{ zab_password }}"
+        host_name: "{{ ansible_default_ipv4.address }}"
+        visible_name: "{{ ansible_default_ipv4.address }}"
+        host_groups: "{{ zabbix_groups }}"
+        link_templates: "{{ zabbix_templates }}"
+        status: enabled
+        state: present
+        inventory_mode: automatic
+        interfaces:
+          - type: 1
+            main: 1
+            useip: 1
+            ip: "{{ ansible_default_ipv4.address }}"
+            port: 10050
+          - type: 2
+            main: 1
+            useip: 1
+            ip: "{{ ansible_default_ipv4.address }}"
+            port: 161

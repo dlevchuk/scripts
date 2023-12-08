@@ -1,0 +1,207 @@
+---
+
+- name: Install zabbix agent on test raspberry
+  hosts: zabbix_hosts
+  gather_facts: yes
+  remote_user: last
+  become: yes 
+  become_user: root
+  become_method: sudo
+  tasks:
+
+
+    - name: Remove Root SSH Configuration
+      file: path=/root/.ssh state=absent
+     
+
+    - name: Copy Secured SSHD Configuration
+      copy: src={{ sshd_conf_path }} dest=/etc/ssh/sshd_config owner=root group=root mode=0644
+
+
+    - name: SSHD Restart
+      service: 
+        name: ssh
+        state: restarted
+        enabled: yes
+
+
+    - name: Check if file exists
+      stat: 
+        path: /etc/zabbix/zabbix_agentd.conf
+      register: file_status
+
+    - name: add zabbix repo
+      apt:
+        deb: https://repo.zabbix.com/zabbix/4.0/raspbian/pool/main/z/zabbix-release/zabbix-release_4.0-3+buster_all.deb
+      register: release
+      when: file_status.stat.exists == False
+
+    - name: Install zabbix-agent
+      apt:
+        name: zabbix-agent
+        update_cache: yes
+      when: file_status.stat.exists == False
+
+    - name: Install iperf3
+      apt:
+        name: iperf3
+        update_cache: yes
+      when: file_status.stat.exists == False
+
+    - name: Install jq
+      apt:
+        name: jq
+        update_cache: yes
+      when: file_status.stat.exists == False       
+
+    - name: Install mtr
+      apt:
+        name: mtr
+        update_cache: yes
+         
+
+    - name: add sudo to zabbix user 
+      lineinfile:
+         path: "/etc/sudoers"
+         regexp: "^zabbix"
+         line: "zabbix ALL=NOPASSWD: ALL"
+      when: file_status.stat.exists == False
+
+    - name: copy zabbix configuration file
+      copy: src={{ zab_config_path }} dest={{ zab_config_dest }}
+      when: file_status.stat.exists == False
+
+    - name: change hostname to myserver
+      shell: hostnamectl set-hostname "{{ hostname }}{{ ansible_default_ipv4.address }}"
+
+
+    - name: add hostname to /etc/hosts
+      lineinfile:
+        dest: /etc/hosts
+        regexp: '^127\.0\.1\.1[ \t]+localhost'
+        line: '127.0.1.1 localhost {{ hostname }}{{ ansible_default_ipv4.address }}'
+        state: present
+
+
+    - name: change agent hostname
+      lineinfile:
+        dest: /etc/zabbix/zabbix_agentd.conf
+        regexp: ^Hostname=.*
+        insertafter: ^# Hostname=
+        line: Hostname={{ hostname }}{{ ansible_default_ipv4.address }}  
+
+    - name: copy speedtest util
+      copy: src={{ speedtest_app_path }} dest={{ speedtest_app_dest_path }}
+      when: file_status.stat.exists == False
+
+
+    - name: add execute priv to speedtest app
+      file: 
+        path: /home/last/speed/speedtest
+        owner: last
+        group: last
+        mode: '0755'
+      when: file_status.stat.exists == False
+
+    - name: accept lisence speedtest app
+      shell: /home/last/speed/speedtest --accept-license
+      when: file_status.stat.exists == False
+
+    - name: speedtest Tiraspol
+      cron:
+        name: "speed to Tiraspol"
+        hour: "*"
+        minute: "{{ 60 | random }}"   
+        job: "/home/last/speed/speedtest -s 1528 -p no -f json > /home/last/speed/speedtest_tiraspol.txt"
+      when: file_status.stat.exists == False
+
+    - name: iperf to MSK
+      cron:
+        name: "iperf to MSK"
+        hour: "*"
+        minute: "{{ 60 | random }}"   
+        job: "iperf3 -c speedtest.hostkey.ru -p 5201 -R -J > /home/last/speed/iperf_hostkey_MSK.txt"
+      when: file_status.stat.exists == False
+
+    - name: iperf to Volya
+      cron:
+        name: "iperf to volya"
+        hour: "*"
+        minute: "{{ 60 | random }}"   
+        job: "iperf3 -c iperf.volia.net -R -J > /home/last/speed/iperf_volya.txt"
+      when: file_status.stat.exists == False
+
+    - name: iperf to $hostname
+      cron:
+        name: "iperf to syslog"
+        hour: "*"
+        minute: "{{ 60 | random }}"   
+        job: "iperf3 -c $hostname -R -J > /home/last/speed/iperf_syslog.txt"
+      when: file_status.stat.exists == False
+
+                  
+
+    - name: start zabbix agent
+      service: 
+        name: zabbix-agent
+        state: started
+        enabled: yes
+      when: file_status.stat.exists == False
+
+
+    - name: restart zabbix agent
+      service: 
+        name: zabbix-agent
+        state: restarted
+
+
+    - name: Create a new host or update an existing host's info
+      local_action:
+        module: zabbix_host
+        server_url: "{{ zabbix_server_url }}"
+        login_user: "{{ zab_user }}"
+        login_password: "{{ zab_password }}"
+        host_name: "{{ hostname }}{{ ansible_default_ipv4.address }}"
+        visible_name: "{{ ansible_default_ipv4.address }}"
+        host_groups: "{{ zabbix_groups }}"
+        link_templates: "{{ zabbix_templates }}"
+        status: enabled
+        state: present
+        inventory_mode: automatic
+        interfaces:
+          - type: 1
+            main: 1
+            useip: 1
+            ip: "{{ ansible_default_ipv4.address }}"
+            port: 10050
+          - type: 2
+            main: 1
+            useip: 1
+            ip: "{{ ansible_default_ipv4.address }}"
+            port: 161
+
+    - name: Create admins users
+      user:
+        name={{ item }}
+      with_items:
+      - default
+
+
+    - name: Add remote authorized key for admins user 
+      authorized_key: user={{ item }} key="{{ lookup('file', '/home/last/Scripts/ansible_configs/speed_raspb/keys/{{ item }}.pub') }}"
+      with_items:
+      - default
+
+
+    - name: Add remote admins user to group sudo
+      command: adduser {{ item }} sudo
+      with_items:
+      - default
+
+    - name: passwordless sudo
+      lineinfile:
+        path: /etc/sudoers
+        state: present
+        regexp: '^%sudo'
+        line: '%sudo ALL=(ALL) NOPASSWD: ALL'
+        validate: 'visudo -cf %s'
